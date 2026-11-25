@@ -75,6 +75,9 @@ async function formationApi(req,db,path){
 const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
 await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_deadlines (day INTEGER PRIMARY KEY, kickoff INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL)")]);
 await db.prepare("CREATE TABLE IF NOT EXISTS fp_override (day INTEGER PRIMARY KEY, until_ms INTEGER NOT NULL)").run();
+// Official Serie A kickoffs through round 19, published 25 September 2026. Preserve administrator corrections.
+const officialKickoffs=["2026-11-21T15:00:00+01:00","2026-11-27T20:45:00+01:00","2026-12-04T20:45:00+01:00","2026-12-11T20:45:00+01:00","2026-12-18T18:30:00+01:00","2027-01-02T12:30:00+01:00","2027-01-05T18:30:00+01:00","2027-01-09T15:00:00+01:00"];
+await db.batch(officialKickoffs.map((t,i)=>db.prepare("INSERT OR IGNORE INTO fp_deadlines(day,kickoff) VALUES (?,?)").bind(i+1,Date.parse(t))));
 const url=new URL(req.url),day=Number(url.searchParams.get("day")),owner=url.searchParams.get("owner")||u.username;
 const allOwners=["marco",...players],validDay=n=>Number.isInteger(n)&&n>=1&&n<=21;
 
