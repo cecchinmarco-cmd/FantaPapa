@@ -87,11 +87,11 @@ await db.prepare("INSERT OR IGNORE INTO fp_formations(day,owner,payload,updated,
 if(path==="/api/auth/formation/status"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,owner,updated,actor,late FROM fp_formations").all();return json({rows:rows.results})}
 if(path==="/api/auth/formation/deadlines"&&req.method==="GET"){const rows=await db.prepare("SELECT day,kickoff FROM fp_deadlines ORDER BY day").all();return json({rows:rows.results})}
 if(!validDay(day)||!allOwners.includes(owner))return json({error:"Giornata o utente non valido"},400);
-const canEdit=u.level===3||u.level===2||u.username===owner;
+const canEdit=u.level===3||u.username===owner;
 const canRead=canEdit||u.views.includes("formazioni-altrui");
 const deadline=await db.prepare("SELECT kickoff FROM fp_deadlines WHERE day=?").bind(day).first();
 const cutoff=deadline?deadline.kickoff+60000:null;
-const override=await db.prepare("SELECT until_ms FROM fp_override WHERE day=?").bind(day).first();const extraordinary=u.level===3||u.level===2&&Number(override?.until_ms)>Date.now();
+const override=await db.prepare("SELECT until_ms FROM fp_override WHERE day=?").bind(day).first();const extraordinary=u.level===3||u.level===2&&u.username===owner&&Number(override?.until_ms)>Date.now();
 if(req.method==="GET"&&path==="/api/auth/formation"){if(!canRead)return json({error:"Non autorizzato"},403);const row=await db.prepare("SELECT payload,updated,actor,late FROM fp_formations WHERE day=? AND owner=?").bind(day,owner).first();const history=u.level===3?await db.prepare("SELECT id,updated,actor,late FROM fp_formation_history WHERE day=? AND owner=? ORDER BY id DESC LIMIT 20").bind(day,owner).all():null;return json({formation:row?{...row,payload:JSON.parse(row.payload)}:null,history:history?.results||[],cutoff,editable:canEdit&&cutoff!==null&&(extraordinary||Date.now()<cutoff),overrideUntil:override?.until_ms||null,level:u.level,owner})}
 if(req.method!=="POST"||req.headers.get("Origin")!==url.origin)return json({error:"Richiesta non consentita"},403);
 const raw=await req.text();if(raw.length>16000)return json({error:"Richiesta troppo grande"},413);let b;try{b=JSON.parse(raw)}catch{return json({error:"Dati non validi"},400)}
