@@ -23,8 +23,29 @@ if(path==="/api/auth/account"){if(!players.includes(b.username)||![1,2].includes
 return json({error:"Funzione non disponibile"},404)}
 
 
+
+async function dailyStats(req,db,u,path){
+await db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
+if(path!=="/api/auth/stats/import"||req.method!=="POST"||u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Accesso riservato"},403);
+if(Number(req.headers.get("Content-Length")||0)>200000)return json({error:"File troppo grande"},413);
+const raw=await req.text();if(raw.length>200000)return json({error:"File troppo grande"},413);
+let d;try{d=JSON.parse(raw)}catch{return json({error:"JSON non valido"},400)}
+const row=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();if(!row)return json({error:"Importare prima le rose"},409);
+const ids=new Set(JSON.parse(row.payload).players.map(p=>p.id));if(d.season!=="2026/27"||d.through!==12||!Array.isArray(d.players)||d.players.length!==200)return json({error:"Attesi 200 giocatori e 12 giornate"},400);
+for(const p of d.players){if(!ids.delete(p.id)||!Array.isArray(p.history)||p.history.length!==12||!p.history.every(q=>q===null||(Array.isArray(q)&&q.length===3&&["T","S","-"].includes(q[0])&&(q[1]===null||Number.isFinite(q[1]))&&(q[2]===null||Number.isFinite(q[2])))))return json({error:"Dati non validi"},400)}
+await db.batch([db.prepare("INSERT INTO fp_daily_stats VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"stats_import","G1-G12",Date.now())]);return json({ok:true,count:200,through:12});
+}
+async function enrichStats(db,data,day){
+await db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
+const row=await db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first();if(!row)return data;
+const d=JSON.parse(row.payload),through=Math.min(d.through,day-1),map=new Map(d.players.map(p=>[p.id,p.history]));
+const avg=a=>{const v=a.filter(q=>q&&Number.isFinite(q[2])).map(q=>q[2]);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null};
+return {...data,through,source:"Fantapunti Gazzetta",players:data.players.map(p=>{const hist=map.get(p.id).slice(0,through);return {...p,fm:avg(hist),fm5:avg(hist.slice(-5)),history:hist.map(q=>q?q[0]:"?"),daily:hist}})};
+}
+
 async function rosterApi(req,db,path){
 const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
+if(path==="/api/auth/stats/import")return dailyStats(req,db,u,path);
 await db.prepare("CREATE TABLE IF NOT EXISTS fp_roster_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
 if(req.method==="GET"&&path==="/api/auth/rosters"){
 const url=new URL(req.url),owner=url.searchParams.get("owner"),purpose=url.searchParams.get("purpose")||"rose";
@@ -34,7 +55,7 @@ if(purpose!=="formazione"&&!full)return json({error:"Sezione non autorizzata"},4
 if(purpose==="formazione"&&owner&&owner!==u.username&&!full&&u.level!==2)return json({error:"Accesso non autorizzato"},403);
 const row=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();
 if(!row)return json({players:[],through:null,user:u.username,level:u.level});
-const data=JSON.parse(row.payload);return json({through:data.through,players:data.players.filter(p=>purpose==="formazione"?p.owner===(owner||u.username):!owner||p.owner===owner),user:u.username,level:u.level});
+const requested=Number(url.searchParams.get("day")||13);const day=Number.isInteger(requested)&&requested>=12&&requested<=32?requested:13;const data=await enrichStats(db,JSON.parse(row.payload),day);return json({source:data.source,through:data.through,players:data.players.filter(p=>purpose==="formazione"?p.owner===(owner||u.username):!owner||p.owner===owner),user:u.username,level:u.level});
 }
 if(path!=="/api/auth/rosters/import"||req.method!=="POST"||u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Accesso riservato"},403);
 if(Number(req.headers.get("Content-Length")||0)>150000)return json({error:"File troppo grande"},413);
@@ -51,7 +72,7 @@ await db.batch([db.prepare("INSERT INTO fp_roster_snapshot VALUES (1,?,?)").bind
 
 export async function auth(req,env,path){
 const db=env.DB;try{await schema(db);await permissionSchema(db);
-if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import')return await rosterApi(req,db,path);
+if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import'||path==='/api/auth/stats/import')return await rosterApi(req,db,path);
 if(['/api/auth/permissions','/api/auth/visibility','/api/auth/account'].includes(path))return await manage(req,db,path);
 if(path==="/api/auth/me"&&req.method==="GET"){const u=await permissions(db,await session(req,db));const admin=await db.prepare("SELECT 1 AS present FROM fp_users WHERE role='admin' LIMIT 1").first();return json({user:u,setup:!admin})}
 if(req.method!=="POST")return json({error:"Metodo non consentito"},405);
