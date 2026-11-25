@@ -116,8 +116,27 @@ await db.batch([db.prepare("INSERT INTO fp_formations VALUES (?,?,?,?,?,?) ON CO
 return json({ok:true,updated:now,actor:u.username,late});
 }
 
+
+async function resultsApi(req,db){
+const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
+if(u.level!==3&&!["calendario","classifica","archivio"].some(s=>u.views.includes(s)))return json({error:"Non autorizzato"},403);
+await db.prepare("CREATE TABLE IF NOT EXISTS fp_results (day INTEGER NOT NULL, match_no INTEGER NOT NULL, home TEXT NOT NULL, away TEXT NOT NULL, hg INTEGER NOT NULL, ag INTEGER NOT NULL, hf REAL NOT NULL, af REAL NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0, updated INTEGER, actor TEXT, PRIMARY KEY(day,match_no))").run();
+const seed=[["Marco","Tomaso",4,3,87,83.5],["Fabrizio","Alfonso",5,0,94.5,65],["Paolo","Michele",4,2,89.5,76],["Daniele","Cepe",1,3,70,78.5]];
+await db.batch(seed.map((r,i)=>db.prepare("INSERT OR IGNORE INTO fp_results(day,match_no,home,away,hg,ag,hf,af) VALUES (1,?,?,?,?,?,?,?)").bind(i,...r)));
+if(req.method==="POST"){
+if(u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Non autorizzato"},403);
+let b;try{b=await req.json()}catch{return json({error:"Dati non validi"},400)}
+if(b.day!==1||!(b.match===null||Number.isInteger(b.match)&&b.match>=0&&b.match<4)||typeof b.confirmed!=="boolean"||(b.match===null&&!b.confirmed))return json({error:"Operazione non valida"},400);
+const now=Date.now(),args=[+b.confirmed,now,u.username,b.day],sql="UPDATE fp_results SET confirmed=?,updated=?,actor=? WHERE day=?"+(b.match===null?"":" AND match_no=?");
+if(b.match!==null)args.push(b.match);
+await db.batch([db.prepare(sql).bind(...args),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,b.confirmed?"result_confirm":"result_reopen",JSON.stringify(b),now)]);
+}else if(req.method!=="GET")return json({error:"Metodo non consentito"},405);
+const rows=await db.prepare("SELECT * FROM fp_results ORDER BY day,match_no").all();return json({rows:rows.results});
+}
+
 export async function auth(req,env,path){
 const db=env.DB;try{await schema(db);await permissionSchema(db);
+if(path==='/api/auth/results')return await resultsApi(req,db);
 if(path.startsWith('/api/auth/formation'))return await formationApi(req,db,path);
 if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import'||path==='/api/auth/stats/import')return await rosterApi(req,db,path);
 if(['/api/auth/permissions','/api/auth/visibility','/api/auth/individual-visibility','/api/auth/account'].includes(path))return await manage(req,db,path);
