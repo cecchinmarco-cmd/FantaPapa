@@ -70,8 +70,40 @@ const existing=await db.prepare("SELECT id FROM fp_roster_snapshot WHERE id=1").
 await db.batch([db.prepare("INSERT INTO fp_roster_snapshot VALUES (1,?,?)").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"roster_import",JSON.stringify({count:200,through:11}),Date.now())]);return json({ok:true,count:200});
 }
 
+
+async function formationApi(req,db,path){
+const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
+await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_deadlines (day INTEGER PRIMARY KEY, kickoff INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL)")]);
+const url=new URL(req.url),day=Number(url.searchParams.get("day")),owner=url.searchParams.get("owner")||u.username;
+const allOwners=["marco",...players],validDay=n=>Number.isInteger(n)&&n>=1&&n<=21;
+if(path==="/api/auth/formation/status"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,owner,updated,late FROM fp_formations").all();return json({rows:rows.results})}
+if(path==="/api/auth/formation/deadlines"&&req.method==="GET"){const rows=await db.prepare("SELECT day,kickoff FROM fp_deadlines ORDER BY day").all();return json({rows:rows.results})}
+if(!validDay(day)||!allOwners.includes(owner))return json({error:"Giornata o utente non valido"},400);
+const canEdit=u.level===3||u.level===2||u.username===owner;
+const canRead=canEdit||u.views.includes("formazioni-altrui");
+const deadline=await db.prepare("SELECT kickoff FROM fp_deadlines WHERE day=?").bind(day).first();
+const cutoff=deadline?deadline.kickoff+60000:null;
+if(req.method==="GET"&&path==="/api/auth/formation"){if(!canRead)return json({error:"Non autorizzato"},403);const row=await db.prepare("SELECT payload,updated,actor,late FROM fp_formations WHERE day=? AND owner=?").bind(day,owner).first();const history=u.level===3?await db.prepare("SELECT id,updated,actor,late FROM fp_formation_history WHERE day=? AND owner=? ORDER BY id DESC LIMIT 20").bind(day,owner).all():null;return json({formation:row?{...row,payload:JSON.parse(row.payload)}:null,history:history?.results||[],cutoff,editable:canEdit&&(u.level===3||cutoff!==null&&Date.now()<cutoff),level:u.level,owner})}
+if(req.method!=="POST"||req.headers.get("Origin")!==url.origin)return json({error:"Richiesta non consentita"},403);
+const raw=await req.text();if(raw.length>16000)return json({error:"Richiesta troppo grande"},413);let b;try{b=JSON.parse(raw)}catch{return json({error:"Dati non validi"},400)}
+if(path==="/api/auth/formation/deadlines"){if(u.level!==3||!Number.isSafeInteger(b.kickoff)||b.kickoff<1787000000000||b.kickoff>1823000000000)return json({error:"Scadenza non valida"},400);await db.batch([db.prepare("INSERT INTO fp_deadlines VALUES (?,?) ON CONFLICT(day) DO UPDATE SET kickoff=excluded.kickoff").bind(day,b.kickoff),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"deadline",JSON.stringify({day,kickoff:b.kickoff}),Date.now())]);return json({ok:true})}
+if(path!=="/api/auth/formation"||!canEdit)return json({error:"Non autorizzato"},403);
+if(cutoff===null)return json({error:"Impostare prima la scadenza ufficiale"},409);
+const now=Date.now(),late=+(now>=cutoff);if(late&&u.level!==3)return json({error:"Consegna chiusa"},403);
+const snapshot=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();if(!snapshot)return json({error:"Rose non disponibili"},409);
+const roster=JSON.parse(snapshot.payload).players.filter(p=>p.owner===owner),mods=["3-4-3","4-3-3","4-4-2","3-5-2","5-3-2","4-5-1","5-4-1"];
+if(!Array.isArray(b.modules)||!b.modules.length||new Set(b.modules).size!==b.modules.length||!b.modules.every(m=>mods.includes(m))||!b.order||!Array.isArray(b.exceptions)||!b.departments)return json({error:"Configurazione non valida"},400);
+for(const role of ["P","D","C","A"]){const ids=roster.filter(p=>p.role===role).map(p=>p.id),o=b.order[role];if(!Array.isArray(o)||o.length!==ids.length||new Set(o).size!==ids.length||!o.every(id=>ids.includes(id)))return json({error:"Ordine rosa non valido"},400)}
+if(new Set(b.exceptions.map(x=>x.id)).size!==b.exceptions.length||!b.exceptions.every(x=>roster.some(p=>p.id===x.id)&&["first","must"].includes(x.type)))return json({error:"Eccezioni individuali non valide"},400);
+for(const role of ["A","C","D"]){const a=b.departments[role],valid=role==="A"?[1,2,3]:[3,4,5];if(!Array.isArray(a)||new Set(a).size!==a.length||!a.every(n=>valid.includes(n)))return json({error:"Eccezioni reparto non valide"},400)}
+const payload=JSON.stringify({modules:b.modules,order:b.order,exceptions:b.exceptions,departments:b.departments});
+await db.batch([db.prepare("INSERT INTO fp_formations VALUES (?,?,?,?,?,?) ON CONFLICT(day,owner) DO UPDATE SET payload=excluded.payload,updated=excluded.updated,actor=excluded.actor,late=excluded.late").bind(day,owner,payload,now,u.username,late),db.prepare("INSERT INTO fp_formation_history(day,owner,payload,updated,actor,late) VALUES (?,?,?,?,?,?)").bind(day,owner,payload,now,u.username,late),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"formation_confirm",JSON.stringify({day,owner,late}),now)]);
+return json({ok:true,updated:now,actor:u.username,late});
+}
+
 export async function auth(req,env,path){
 const db=env.DB;try{await schema(db);await permissionSchema(db);
+if(path.startsWith('/api/auth/formation'))return await formationApi(req,db,path);
 if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import'||path==='/api/auth/stats/import')return await rosterApi(req,db,path);
 if(['/api/auth/permissions','/api/auth/visibility','/api/auth/account'].includes(path))return await manage(req,db,path);
 if(path==="/api/auth/me"&&req.method==="GET"){const u=await permissions(db,await session(req,db));const admin=await db.prepare("SELECT 1 AS present FROM fp_users WHERE role='admin' LIMIT 1").first();return json({user:u,setup:!admin})}
