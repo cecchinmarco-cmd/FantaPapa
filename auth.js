@@ -156,7 +156,7 @@ const guard="EXISTS (SELECT 1 FROM fp_invites WHERE username=? AND token_hash=? 
 const args=[row.username,hash,stamp,row.username,row.username];
 const result=await db.batch([db.prepare("UPDATE fp_users SET salt=?,password_hash=? WHERE username=? AND role='player' AND "+guard).bind(salt,password,row.username,...args),db.prepare("DELETE FROM fp_sessions WHERE username=? AND "+guard).bind(row.username,...args),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) SELECT ?,'invite_redeem',?,? WHERE "+guard).bind(row.username,JSON.stringify({username:row.username}),stamp,...args),db.prepare("UPDATE fp_invites SET used=1 WHERE username=? AND token_hash=? AND used=0 AND expires>? AND NOT EXISTS (SELECT 1 FROM fp_levels WHERE username=? AND enabled=0) AND NOT EXISTS (SELECT 1 FROM fp_guests WHERE username=? AND enabled=0)").bind(...args)]);
 if(result[0].meta.changes!==1||result[3].meta.changes!==1)return json({error:"Invito non più valido"},410);
-return json({ok:true,username:row.username});
+const current=(req.headers.get("Cookie")||"").match(/(?:^|;\s*)fp_session=([a-f0-9]{64})(?:;|$)/)?.[1];if(current)await db.prepare("DELETE FROM fp_sessions WHERE token_hash=?").bind(await digest(current)).run();return json({ok:true,username:row.username},200,{"Set-Cookie":cookie("",0)});
 }
 const admin=await permissions(db,await session(req,db));if(admin?.level!==3)return json({error:"Accesso riservato"},403);
 const name=typeof b.username==="string"?b.username.trim().toLowerCase():"";
