@@ -1,5 +1,7 @@
+import {auth} from "./auth.js";
 export default {async fetch(request,env){
  const path=new URL(request.url).pathname;
+ if(path.startsWith("/api/auth/"))return auth(request,env,path);
  if(path==="/api/collaudo" && request.method==="POST"){
  try{
  if(new URL(request.url).origin!==request.headers.get("Origin"))return new Response("Origine non valida",{status:403});
