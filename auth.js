@@ -22,8 +22,36 @@ if(path==="/api/auth/visibility"){if(![1,2].includes(b.level)||!sections.include
 if(path==="/api/auth/account"){if(!players.includes(b.username)||![1,2].includes(b.level)||typeof b.enabled!=="boolean")return json({error:"Account non valido"},400);const existing=await db.prepare("SELECT username FROM fp_users WHERE username=? AND role='player'").bind(b.username).first();const ops=[];if(b.password!==undefined){if(typeof b.password!=="string"||b.password.length<12||b.password.length>128)return json({error:"Password: minimo 12 caratteri"},400);const salt=random(),hash=await derive(b.password,salt);ops.push(db.prepare("INSERT INTO fp_users VALUES (?,?,?,'player') ON CONFLICT(username) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash WHERE role='player'").bind(b.username,salt,hash));ops.push(db.prepare("DELETE FROM fp_sessions WHERE username=?").bind(b.username))}else if(!existing)return json({error:"Imposta una password iniziale"},400);ops.push(db.prepare("INSERT INTO fp_levels VALUES (?,?,?) ON CONFLICT(username) DO UPDATE SET level=excluded.level,enabled=excluded.enabled").bind(b.username,b.level,+b.enabled));if(!b.enabled)ops.push(db.prepare("DELETE FROM fp_sessions WHERE username=?").bind(b.username));ops.push(audit("account",{username:b.username,level:b.level,enabled:b.enabled,passwordChanged:b.password!==undefined}));await db.batch(ops);return json({ok:true})}
 return json({error:"Funzione non disponibile"},404)}
 
+
+async function rosterApi(req,db,path){
+const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
+await db.prepare("CREATE TABLE IF NOT EXISTS fp_roster_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
+if(req.method==="GET"&&path==="/api/auth/rosters"){
+const url=new URL(req.url),owner=url.searchParams.get("owner"),purpose=url.searchParams.get("purpose")||"rose";
+if(!["rose","statistiche","formazione"].includes(purpose))return json({error:"Richiesta non valida"},400);
+const full=u.level===3||u.views.includes(purpose==="formazione"?"formazioni-altrui":purpose);
+if(purpose!=="formazione"&&!full)return json({error:"Sezione non autorizzata"},403);
+if(purpose==="formazione"&&owner&&owner!==u.username&&!full&&u.level!==2)return json({error:"Accesso non autorizzato"},403);
+const row=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();
+if(!row)return json({players:[],through:null,user:u.username,level:u.level});
+const data=JSON.parse(row.payload);return json({through:data.through,players:data.players.filter(p=>purpose==="formazione"?p.owner===(owner||u.username):!owner||p.owner===owner),user:u.username,level:u.level});
+}
+if(path!=="/api/auth/rosters/import"||req.method!=="POST"||u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Accesso riservato"},403);
+if(Number(req.headers.get("Content-Length")||0)>150000)return json({error:"File troppo grande"},413);
+const raw=await req.text();if(raw.length>150000)return json({error:"File troppo grande"},413);
+let d;try{d=JSON.parse(raw)}catch{return json({error:"File JSON non valido"},400)}
+const owners=["marco",...players],roles={P:3,D:8,C:8,A:6};
+if(d?.season!=="2026/27"||d.through!==11||!Array.isArray(d.players)||d.players.length!==200)return json({error:"Attesi 200 giocatori, stagione 2026/27, dati G1–11"},400);
+const ids=new Set(),names=new Set();
+for(const p of d.players){if(!p||!Number.isInteger(p.id)||ids.has(p.id)||typeof p.name!=="string"||!p.name.trim()||p.name.length>100||names.has(p.name)||typeof p.team!=="string"||!/^[A-Z]{2,4}$/.test(p.team)||!owners.includes(p.owner)||!Object.hasOwn(roles,p.role)||!Number.isFinite(p.price)||p.price<0||!Array.isArray(p.history)||p.history.length!==11||!p.history.every(v=>["T","S","-"].includes(v))||!["fm","fm5","appearances","goals","assists","conceded"].every(k=>p[k]===null||Number.isFinite(p[k])))return json({error:"Dati giocatore non validi"},400);ids.add(p.id);names.add(p.name)}
+for(const owner of owners){const rr=d.players.filter(p=>p.owner===owner);if(rr.length!==25||rr.reduce((a,p)=>a+p.price,0)!==500||Object.entries(roles).some(([k,n])=>rr.filter(p=>p.role===k).length!==n))return json({error:"Rosa non valida: "+owner},400)}
+const existing=await db.prepare("SELECT id FROM fp_roster_snapshot WHERE id=1").first();if(existing)return json({error:"Rose già importate. Sostituzione non consentita."},409);
+await db.batch([db.prepare("INSERT INTO fp_roster_snapshot VALUES (1,?,?)").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"roster_import",JSON.stringify({count:200,through:11}),Date.now())]);return json({ok:true,count:200});
+}
+
 export async function auth(req,env,path){
 const db=env.DB;try{await schema(db);await permissionSchema(db);
+if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import')return await rosterApi(req,db,path);
 if(['/api/auth/permissions','/api/auth/visibility','/api/auth/account'].includes(path))return await manage(req,db,path);
 if(path==="/api/auth/me"&&req.method==="GET"){const u=await permissions(db,await session(req,db));const admin=await db.prepare("SELECT 1 AS present FROM fp_users WHERE role='admin' LIMIT 1").first();return json({user:u,setup:!admin})}
 if(req.method!=="POST")return json({error:"Metodo non consentito"},405);
