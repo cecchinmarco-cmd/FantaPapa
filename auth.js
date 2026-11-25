@@ -74,22 +74,32 @@ await db.batch([db.prepare("INSERT INTO fp_roster_snapshot VALUES (1,?,?)").bind
 async function formationApi(req,db,path){
 const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
 await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_deadlines (day INTEGER PRIMARY KEY, kickoff INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formation_history (id INTEGER PRIMARY KEY AUTOINCREMENT, day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL)")]);
+await db.prepare("CREATE TABLE IF NOT EXISTS fp_override (day INTEGER PRIMARY KEY, until_ms INTEGER NOT NULL)").run();
 const url=new URL(req.url),day=Number(url.searchParams.get("day")),owner=url.searchParams.get("owner")||u.username;
 const allOwners=["marco",...players],validDay=n=>Number.isInteger(n)&&n>=1&&n<=21;
-if(path==="/api/auth/formation/status"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,owner,updated,late FROM fp_formations").all();return json({rows:rows.results})}
+
+// Materialize inherited confirmations only after known official deadlines.
+// Copy the last confirmed configuration, never invent an initial formation.
+const nowMs=Date.now();
+const closed=await db.prepare("SELECT day,kickoff FROM fp_deadlines WHERE kickoff+60000<=? ORDER BY day").bind(nowMs).all();
+for(const d of closed.results){if(d.day<=1)continue;
+await db.prepare("INSERT OR IGNORE INTO fp_formations(day,owner,payload,updated,actor,late) SELECT ?,p.owner,p.payload,?,'ufficio',0 FROM fp_formations p WHERE p.day=(SELECT MAX(q.day) FROM fp_formations q WHERE q.owner=p.owner AND q.day<?) AND p.day<? AND p.updated<=?").bind(d.day,d.kickoff+60000,d.day,d.day,d.kickoff+60000).run()}
+if(path==="/api/auth/formation/status"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,owner,updated,actor,late FROM fp_formations").all();return json({rows:rows.results})}
 if(path==="/api/auth/formation/deadlines"&&req.method==="GET"){const rows=await db.prepare("SELECT day,kickoff FROM fp_deadlines ORDER BY day").all();return json({rows:rows.results})}
 if(!validDay(day)||!allOwners.includes(owner))return json({error:"Giornata o utente non valido"},400);
 const canEdit=u.level===3||u.level===2||u.username===owner;
 const canRead=canEdit||u.views.includes("formazioni-altrui");
 const deadline=await db.prepare("SELECT kickoff FROM fp_deadlines WHERE day=?").bind(day).first();
 const cutoff=deadline?deadline.kickoff+60000:null;
-if(req.method==="GET"&&path==="/api/auth/formation"){if(!canRead)return json({error:"Non autorizzato"},403);const row=await db.prepare("SELECT payload,updated,actor,late FROM fp_formations WHERE day=? AND owner=?").bind(day,owner).first();const history=u.level===3?await db.prepare("SELECT id,updated,actor,late FROM fp_formation_history WHERE day=? AND owner=? ORDER BY id DESC LIMIT 20").bind(day,owner).all():null;return json({formation:row?{...row,payload:JSON.parse(row.payload)}:null,history:history?.results||[],cutoff,editable:canEdit&&(u.level===3||cutoff!==null&&Date.now()<cutoff),level:u.level,owner})}
+const override=await db.prepare("SELECT until_ms FROM fp_override WHERE day=?").bind(day).first();const extraordinary=u.level===3||u.level===2&&Number(override?.until_ms)>Date.now();
+if(req.method==="GET"&&path==="/api/auth/formation"){if(!canRead)return json({error:"Non autorizzato"},403);const row=await db.prepare("SELECT payload,updated,actor,late FROM fp_formations WHERE day=? AND owner=?").bind(day,owner).first();const history=u.level===3?await db.prepare("SELECT id,updated,actor,late FROM fp_formation_history WHERE day=? AND owner=? ORDER BY id DESC LIMIT 20").bind(day,owner).all():null;return json({formation:row?{...row,payload:JSON.parse(row.payload)}:null,history:history?.results||[],cutoff,editable:canEdit&&cutoff!==null&&(extraordinary||Date.now()<cutoff),overrideUntil:override?.until_ms||null,level:u.level,owner})}
 if(req.method!=="POST"||req.headers.get("Origin")!==url.origin)return json({error:"Richiesta non consentita"},403);
 const raw=await req.text();if(raw.length>16000)return json({error:"Richiesta troppo grande"},413);let b;try{b=JSON.parse(raw)}catch{return json({error:"Dati non validi"},400)}
+if(path==="/api/auth/formation/override"){if(u.level!==3||!Number.isInteger(b.minutes)||b.minutes<0||b.minutes>60)return json({error:"Finestra non valida"},400);const until=b.minutes?Date.now()+b.minutes*60000:0;await db.batch([db.prepare("INSERT INTO fp_override VALUES (?,?) ON CONFLICT(day) DO UPDATE SET until_ms=excluded.until_ms").bind(day,until),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"formation_override",JSON.stringify({day,until}),Date.now())]);return json({ok:true,until})}
 if(path==="/api/auth/formation/deadlines"){if(u.level!==3||!Number.isSafeInteger(b.kickoff)||b.kickoff<1787000000000||b.kickoff>1823000000000)return json({error:"Scadenza non valida"},400);await db.batch([db.prepare("INSERT INTO fp_deadlines VALUES (?,?) ON CONFLICT(day) DO UPDATE SET kickoff=excluded.kickoff").bind(day,b.kickoff),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"deadline",JSON.stringify({day,kickoff:b.kickoff}),Date.now())]);return json({ok:true})}
 if(path!=="/api/auth/formation"||!canEdit)return json({error:"Non autorizzato"},403);
 if(cutoff===null)return json({error:"Impostare prima la scadenza ufficiale"},409);
-const now=Date.now(),late=+(now>=cutoff);if(late&&u.level!==3)return json({error:"Consegna chiusa"},403);
+const now=Date.now(),late=+(now>=cutoff);if(late&&!extraordinary)return json({error:"Consegna chiusa"},403);
 const snapshot=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();if(!snapshot)return json({error:"Rose non disponibili"},409);
 const roster=JSON.parse(snapshot.payload).players.filter(p=>p.owner===owner),mods=["3-4-3","4-3-3","4-4-2","3-5-2","5-3-2","4-5-1","5-4-1"];
 if(!Array.isArray(b.modules)||!b.modules.length||new Set(b.modules).size!==b.modules.length||!b.modules.every(m=>mods.includes(m))||!b.order||!Array.isArray(b.exceptions)||!b.departments)return json({error:"Configurazione non valida"},400);
