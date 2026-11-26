@@ -86,22 +86,25 @@ await db.prepare("CREATE TABLE IF NOT EXISTS fp_override (day INTEGER PRIMARY KE
 // Official Serie A kickoffs through round 19, published 25 September 2026. Preserve administrator corrections.
 const officialKickoffs=["2026-11-21T15:00:00+01:00","2026-11-27T20:45:00+01:00","2026-12-04T20:45:00+01:00","2026-12-11T20:45:00+01:00","2026-12-18T18:30:00+01:00","2027-01-02T12:30:00+01:00","2027-01-05T18:30:00+01:00","2027-01-09T15:00:00+01:00"];
 await db.batch(officialKickoffs.map((t,i)=>db.prepare("INSERT OR IGNORE INTO fp_deadlines(day,kickoff) VALUES (?,?)").bind(i+1,Date.parse(t))));
+// Repair only future deadlines matching the known erroneous +1h conversion; preserve other administrator adjustments.
+await db.batch(officialKickoffs.map((t,i)=>db.prepare("UPDATE fp_deadlines SET kickoff=? WHERE day=? AND kickoff=? AND kickoff>? AND ?>?").bind(Date.parse(t),i+1,Date.parse(t)+3600000,Date.now(),Date.parse(t),Date.now())));
+
 const url=new URL(req.url),day=Number(url.searchParams.get("day")),owner=url.searchParams.get("owner")||u.username;
 const allOwners=["marco",...players],validDay=n=>Number.isInteger(n)&&n>=1&&n<=21;
 
 // Materialize inherited confirmations only after known official deadlines.
 // Copy the last confirmed configuration, never invent an initial formation.
 const nowMs=Date.now();
-const closed=await db.prepare("SELECT day,kickoff FROM fp_deadlines WHERE kickoff+60000<=? ORDER BY day").bind(nowMs).all();
+const closed=await db.prepare("SELECT day,kickoff FROM fp_deadlines WHERE kickoff<=? ORDER BY day").bind(nowMs).all();
 for(const d of closed.results){if(d.day<=1)continue;
-await db.prepare("INSERT OR IGNORE INTO fp_formations(day,owner,payload,updated,actor,late) SELECT ?,p.owner,p.payload,?,'ufficio',0 FROM fp_formations p WHERE p.day=(SELECT MAX(q.day) FROM fp_formations q WHERE q.owner=p.owner AND q.day<?) AND p.day<? AND p.updated<=?").bind(d.day,d.kickoff+60000,d.day,d.day,d.kickoff+60000).run()}
+await db.prepare("INSERT OR IGNORE INTO fp_formations(day,owner,payload,updated,actor,late) SELECT ?,p.owner,p.payload,?,'ufficio',0 FROM fp_formations p WHERE p.day=(SELECT MAX(q.day) FROM fp_formations q WHERE q.owner=p.owner AND q.day<?) AND p.day<? AND p.updated<=?").bind(d.day,d.kickoff,d.day,d.day,d.kickoff).run()}
 if(path==="/api/auth/formation/status"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,owner,updated,actor,late FROM fp_formations").all();return json({rows:rows.results})}
 if(path==="/api/auth/formation/deadlines"&&req.method==="GET"){if(u.level!==3&&!u.views.includes("formazione")&&!u.views.includes("calendario"))return json({error:"Non autorizzato"},403);const rows=await db.prepare("SELECT day,kickoff FROM fp_deadlines ORDER BY day").all();return json({rows:rows.results})}
 if(!validDay(day)||!allOwners.includes(owner))return json({error:"Giornata o utente non valido"},400);
 const canEdit=u.level===3||u.collaborator||u.username===owner&&u.views.includes("formazione")&&u.views.includes("formazione-edit");
 const canRead=u.level===3||u.collaborator||(u.username===owner?u.views.includes("formazione"):u.views.includes("formazioni-altrui"));
 const deadline=await db.prepare("SELECT kickoff FROM fp_deadlines WHERE day=?").bind(day).first();
-const cutoff=deadline?deadline.kickoff+60000:null;
+const cutoff=deadline?deadline.kickoff:null;
 const override=await db.prepare("SELECT until_ms FROM fp_override WHERE day=?").bind(day).first();const extraordinary=u.level===3||u.collaborator||u.level===2&&u.username===owner&&Number(override?.until_ms)>Date.now();
 if(req.method==="GET"&&path==="/api/auth/formation"){if(!canRead)return json({error:"Non autorizzato"},403);const row=await db.prepare("SELECT payload,updated,actor,late FROM fp_formations WHERE day=? AND owner=?").bind(day,owner).first();const history=u.level===3||u.collaborator?await db.prepare("SELECT id,updated,actor,late FROM fp_formation_history WHERE day=? AND owner=? ORDER BY id DESC LIMIT 20").bind(day,owner).all():null;return json({formation:row?{...row,payload:JSON.parse(row.payload)}:null,history:history?.results||[],cutoff,editable:canEdit&&cutoff!==null&&(extraordinary||Date.now()<cutoff),overrideUntil:override?.until_ms||null,level:u.level,collaborator:u.collaborator,owner})}
 if(req.method!=="POST"||req.headers.get("Origin")!==url.origin)return json({error:"Richiesta non consentita"},403);
