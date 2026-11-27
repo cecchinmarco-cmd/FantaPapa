@@ -121,7 +121,10 @@ for(const role of ["P","D","C","A"]){const ids=roster.filter(p=>p.role===role).m
 if(new Set(b.exceptions.map(x=>x.id)).size!==b.exceptions.length||!b.exceptions.every(x=>roster.some(p=>p.id===x.id)&&["first","must"].includes(x.type)))return json({error:"Eccezioni individuali non valide"},400);
 const firstRoles=b.exceptions.filter(x=>x.type==="first").map(x=>roster.find(p=>p.id===x.id).role);if(new Set(firstRoles).size!==firstRoles.length)return json({error:"È consentito un solo primo cambio per reparto."},400);
 for(const role of ["A","C","D"]){const a=b.departments[role],valid=role==="A"?[1,2,3]:[3,4,5];if(!Array.isArray(a)||new Set(a).size!==a.length||!a.every(n=>valid.includes(n)))return json({error:"Eccezioni reparto non valide"},400)}
-const payload=JSON.stringify({modules:b.modules,order:b.order,exceptions:b.exceptions,departments:b.departments});
+const pairs=b.pairs===undefined?[]:b.pairs;
+if(!Array.isArray(pairs)||pairs.length>12)return json({error:"Ganci non validi"},400);
+const linked=new Set();for(const pair of pairs){if(!Array.isArray(pair)||pair.length!==2||pair[0]===pair[1]||pair.some(id=>linked.has(id)))return json({error:"Ogni calciatore può avere un solo gancio"},400);const p=roster.find(x=>x.id===pair[0]),q=roster.find(x=>x.id===pair[1]);if(!p||!q||p.role!==q.role)return json({error:"Collega soltanto calciatori dello stesso reparto"},400);pair.forEach(id=>linked.add(id))}
+const payload=JSON.stringify({modules:b.modules,order:b.order,exceptions:b.exceptions,departments:b.departments,pairs});
 await db.batch([db.prepare("INSERT INTO fp_formations VALUES (?,?,?,?,?,?) ON CONFLICT(day,owner) DO UPDATE SET payload=excluded.payload,updated=excluded.updated,actor=excluded.actor,late=excluded.late").bind(day,owner,payload,now,u.username,late),db.prepare("INSERT INTO fp_formation_history(day,owner,payload,updated,actor,late) VALUES (?,?,?,?,?,?)").bind(day,owner,payload,now,u.username,late),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"formation_confirm",JSON.stringify({day,owner,late}),now)]);
 return json({ok:true,updated:now,actor:u.username,late});
 }
