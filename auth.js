@@ -134,6 +134,40 @@ return json({ok:true,updated:now,actor:u.username,late});
 }
 
 
+
+// Provisional sheet calculation: no write to official scores; incomplete data never becomes a confirmed result.
+function calculateSheetProgress(p,votes){
+ const roles=["P","D","C","A"],order=Object.fromEntries(roles.map(k=>[k,(p.order?.[k]||[]).map(String)])),valid=id=>Number.isFinite(votes[id]?.[2])&&["T","S"].includes(votes[id]?.[0]),started=id=>votes[id]?.[0]==="T",known=id=>Array.isArray(votes[id]),must=new Set((p.exceptions||[]).filter(x=>x.type==="must").map(x=>String(x.id))),first=new Set((p.exceptions||[]).filter(x=>x.type==="first").map(x=>String(x.id)));
+ for(const pair of p.pairs||[]){const [a,b]=pair.map(String);const k=roles.find(r=>order[r].includes(a)&&order[r].includes(b));if(!k)continue;const list=order[k],lo=Math.min(list.indexOf(a),list.indexOf(b)),hi=Math.max(list.indexOf(a),list.indexOf(b));if(known(list[lo])&&!started(list[lo])&&started(list[hi]))[list[lo],list[hi]]=[list[hi],list[lo]]}
+ const fv=Object.fromEntries(Object.entries(votes).filter(([id])=>valid(id)).map(([id,q])=>[id,q[2]])),sum=ids=>ids.reduce((t,id)=>t+fv[id],0);
+ if(!Object.keys(fv).length)return {initial:0,final:0,initialTotal:0,finalTotal:0,votes:fv,initialIds:[],finalIds:[],provisional:true};
+ // Wait until every player's appearance is known before choosing the full initial module and changes.
+ if(roles.some(k=>order[k].some(id=>!known(id))))return {initial:null,final:null,initialTotal:null,finalTotal:null,votes:fv,initialIds:[],finalIds:[],provisional:true};
+ const pool=Object.fromEntries(roles.map(k=>[k,order[k].filter(valid)]));
+ const candidates=(p.modules||[]).map((m,index)=>{const sizes=[1,...m.split("-").map(Number)];if(sizes.length!==4||sizes.reduce((a,b)=>a+b,0)!==11)return null;const xi={},reserve={},covered={};
+ for(let i=0;i<4;i++){const k=roles[i],list=pool[k],n=sizes[i],rank=list.filter(id=>must.has(id)).concat(list.filter(id=>!must.has(id)&&started(id)),list.filter(id=>!must.has(id)&&!started(id)));xi[k]=rank.slice(0,n);reserve[k]=list.filter(id=>!xi[k].includes(id));covered[k]=xi[k].length===n&&(reserve[k].length>0||(p.departments?.[k]||[]).includes(n)&&xi[k].every(started))}
+ const ids=roles.flatMap(k=>xi[k]);return {index,xi,reserve,covered,count:ids.length,full:ids.length===11&&roles.slice(1).every(k=>covered[k]),must:ids.filter(id=>must.has(id)).length,starts:ids.filter(started).length};}).filter(Boolean);
+ candidates.sort((a,b)=>b.must-a.must||Number(b.full)-Number(a.full)||b.count-a.count||Number(b.covered.A)-Number(a.covered.A)||Number(b.covered.C)-Number(a.covered.C)||Number(b.covered.D)-Number(a.covered.D)||a.index-b.index);
+ const c=candidates[0];if(!c)return {initial:null,final:null,initialTotal:null,finalTotal:null,votes:fv,initialIds:[],finalIds:[],provisional:true};
+ const initialIds=roles.flatMap(k=>c.xi[k]),changes=[];
+ for(const k of roles){const bench=c.reserve[k],incoming=bench.find(id=>first.has(id)&&!started(id))||bench.find(started)||bench[0];if(!incoming)continue;const replace=c.xi[k].filter(id=>!must.has(id)).sort((a,b)=>fv[a]-fv[b])[0];if(replace&&fv[incoming]>fv[replace])changes.push({incoming,replace,gain:fv[incoming]-fv[replace]})}
+ changes.sort((a,b)=>b.gain-a.gain);const finalIds=initialIds.map(id=>changes.slice(0,2).find(c=>c.replace===id)?.incoming||id);
+ return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,provisional:true};
+}
+async function formationProgressApi(req,db){
+ const u=await permissions(db,await session(req,db));if(!u||!u.views.includes("calendario")||req.method!=="GET")return json({error:"Non autorizzato"},403);
+ const day=Number(new URL(req.url).searchParams.get("day"));if(!Number.isInteger(day)||day<1||day>21)return json({error:"Giornata non valida"},400);
+ await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))"),db.prepare("CREATE TABLE IF NOT EXISTS fp_deadlines (day INTEGER PRIMARY KEY, kickoff INTEGER NOT NULL)")]);
+ const cutoff=await db.prepare("SELECT kickoff FROM fp_deadlines WHERE day=?").bind(day).first(),before=cutoff&&cutoff.kickoff>Date.now(),progress={};
+ if(!before&&u.level!==3&&!u.results){if(day>Number(u.throughDay||0))return json({progress});const r=await db.prepare("SELECT COUNT(*) AS n FROM fp_results WHERE day=? AND confirmed=1").bind(day).first();if(r?.n!==4)return json({progress})}
+ const forms=await db.prepare("SELECT owner,payload FROM fp_formations WHERE day=?").bind(day).all();
+ const empty={initial:0,final:0,initialTotal:0,finalTotal:0,votes:{},initialIds:[],finalIds:[],provisional:true};
+ if(before){for(const x of forms.results)if(u.level===3||u.collaborator||x.owner===u.username)progress[x.owner]=empty;return json({progress})}
+ if(!cutoff)return json({progress});
+ const d=await db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first(),daily=d?JSON.parse(d.payload):null,map=new Map((daily?.players||[]).map(p=>[String(p.id),p.history?.[day+10]]));
+ for(const x of forms.results){if(!daily||daily.through<day+11){progress[x.owner]=empty;continue}const p=JSON.parse(x.payload),votes=Object.fromEntries(Object.values(p.order||{}).flat().map(id=>[String(id),map.get(String(id))]));progress[x.owner]=calculateSheetProgress(p,votes)}
+ return json({progress,provisional:true});
+}
 async function xiProgressApi(req,db){
 const u=await permissions(db,await session(req,db));if(!u||!u.views.includes("calendario")||req.method!=="GET")return json({error:"Non autorizzato"},403);
 const counts={};const maxDay=u.level===3||u.results?21:Number(u.throughDay||0);
@@ -236,6 +270,7 @@ if(path==='/api/auth/group-photo')return await groupPhoto(req,db);
 if(path.startsWith('/api/auth/invite/'))return await inviteApi(req,db,path);
 if(path==='/api/auth/results')return await resultsApi(req,db);
 if(path==='/api/auth/xi-progress')return await xiProgressApi(req,db);
+if(path==='/api/auth/formation-progress')return await formationProgressApi(req,db);
 if(path.startsWith('/api/auth/formation'))return await formationApi(req,db,path);
 if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import'||path==='/api/auth/stats/import')return await rosterApi(req,db,path);
 if(['/api/auth/simple-permissions','/api/auth/permissions','/api/auth/visibility','/api/auth/individual-visibility','/api/auth/account','/api/auth/permission-mode','/api/auth/permission-reset','/api/auth/permission-group','/api/auth/collaborator','/api/auth/guest'].includes(path))return await manage(req,db,path);
