@@ -136,13 +136,14 @@ return json({ok:true,updated:now,actor:u.username,late});
 
 
 // Provisional sheet calculation: no write to official scores; incomplete data never becomes a confirmed result.
-function calculateSheetProgress(p,votes){
+function calculateSheetProgress(p,votes){const out=calculateSheetProgressCore(p,votes);return {...out,presences:Object.fromEntries(Object.entries(votes).filter(([id,q])=>Array.isArray(q)&&["T","S","-"].includes(q[0])).map(([id,q])=>[id,q[0]]))}}
+function calculateSheetProgressCore(p,votes){
  const roles=["P","D","C","A"],order=Object.fromEntries(roles.map(k=>[k,(p.order?.[k]||[]).map(String)])),valid=id=>Number.isFinite(votes[id]?.[2])&&["T","S"].includes(votes[id]?.[0]),started=id=>votes[id]?.[0]==="T",known=id=>Array.isArray(votes[id]),must=new Set((p.exceptions||[]).filter(x=>x.type==="must").map(x=>String(x.id))),first=new Set((p.exceptions||[]).filter(x=>x.type==="first").map(x=>String(x.id)));
  for(const pair of p.pairs||[]){const [a,b]=pair.map(String);const k=roles.find(r=>order[r].includes(a)&&order[r].includes(b));if(!k)continue;const list=order[k],lo=Math.min(list.indexOf(a),list.indexOf(b)),hi=Math.max(list.indexOf(a),list.indexOf(b));if(known(list[lo])&&!started(list[lo])&&started(list[hi]))[list[lo],list[hi]]=[list[hi],list[lo]]}
  const fv=Object.fromEntries(Object.entries(votes).filter(([id])=>valid(id)).map(([id,q])=>[id,q[2]])),sum=ids=>ids.reduce((t,id)=>t+fv[id],0);
  if(!Object.keys(fv).length)return {initial:0,final:0,initialTotal:0,finalTotal:0,votes:fv,initialIds:[],finalIds:[],provisional:true};
  // Wait until every player's appearance is known before choosing the full initial module and changes.
- if(roles.some(k=>order[k].some(id=>!known(id))))return {initial:null,final:null,initialTotal:null,finalTotal:null,votes:fv,initialIds:[],finalIds:[],provisional:true};
+ if(roles.some(k=>order[k].some(id=>!known(id))))return {initial:0,final:0,initialTotal:0,finalTotal:0,votes:fv,initialIds:[],finalIds:[],provisional:true};
  const pool=Object.fromEntries(roles.map(k=>[k,order[k].filter(valid)]));
  const candidates=(p.modules||[]).map((m,index)=>{const sizes=[1,...m.split("-").map(Number)];if(sizes.length!==4||sizes.reduce((a,b)=>a+b,0)!==11)return null;const xi={},reserve={},covered={};
  for(let i=0;i<4;i++){const k=roles[i],list=pool[k],n=sizes[i],rank=list.filter(id=>must.has(id)).concat(list.filter(id=>!must.has(id)&&started(id)),list.filter(id=>!must.has(id)&&!started(id)));xi[k]=rank.slice(0,n);reserve[k]=list.filter(id=>!xi[k].includes(id));covered[k]=xi[k].length===n&&(reserve[k].length>0||(p.departments?.[k]||[]).includes(n)&&xi[k].every(started))}
@@ -152,7 +153,7 @@ function calculateSheetProgress(p,votes){
  const initialIds=roles.flatMap(k=>c.xi[k]),changes=[];
  for(const k of roles){const bench=c.reserve[k],incoming=bench.find(id=>first.has(id)&&!started(id))||bench.find(started)||bench[0];if(!incoming)continue;const replace=c.xi[k].filter(id=>!must.has(id)).sort((a,b)=>fv[a]-fv[b])[0];if(replace&&fv[incoming]>fv[replace])changes.push({incoming,replace,gain:fv[incoming]-fv[replace]})}
  changes.sort((a,b)=>b.gain-a.gain);const finalIds=initialIds.map(id=>changes.slice(0,2).find(c=>c.replace===id)?.incoming||id);
- return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,provisional:true};
+ return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,provisional:true,allKnown:true};
 }
 async function formationProgressApi(req,db){
  const u=await permissions(db,await session(req,db));if(!u||!u.views.includes("calendario")||req.method!=="GET")return json({error:"Non autorizzato"},403);
@@ -177,6 +178,28 @@ const daily=d?JSON.parse(d.payload):null,map=new Map((daily?.players||[]).map(p=
 for(const k of deadlines.results){if(k.day>maxDay||(!u.results&&u.level!==3&&k.kickoff<=Date.now()&&!published.has(k.day)))continue;const row=counts[k.day]={};for(const owner of owners){if(k.kickoff>Date.now()){row[owner]=0;continue}const f=forms.results.find(x=>x.day===k.day&&x.owner===owner);if(!daily||daily.through<k.day+11){row[owner]=0;continue}if(!f){row[owner]=null;continue}const p=JSON.parse(f.payload),available=roles.map(role=>(p.order?.[role]||[]).filter(id=>{const q=map.get(String(id))?.[k.day+10];return q&&["T","S"].includes(q[0])&&Number.isFinite(q[2]);}).length);const modules=(p.modules||[]).map(m=>[1,...m.split("-").map(Number)]).filter(m=>m.length===4&&m.reduce((x,y)=>x+y,0)===11);row[owner]=modules.length?Math.max(...modules.map(m=>m.reduce((n,k,i)=>n+Math.min(k,available[i]),0))):null}}
 return json({counts,provisional:true,liveAllowed:u.level===3||!!u.results});
 }
+
+async function archiveSchema(db){await db.batch([
+ db.prepare("CREATE TABLE IF NOT EXISTS fp_archive_snapshots(day INTEGER PRIMARY KEY,payload TEXT NOT NULL,created INTEGER NOT NULL)"),
+ db.prepare("CREATE TABLE IF NOT EXISTS fp_roster_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)"),
+ db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)"),
+ db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))")]);}
+async function archivePayload(db,day,rows){
+ const [roster,daily,forms]=await Promise.all([db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first(),db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first(),db.prepare("SELECT owner,payload,updated,actor,late FROM fp_formations WHERE day=?").bind(day).all()]);
+ const players=roster?JSON.parse(roster.payload).players:[],d=daily?JSON.parse(daily.payload):null,map=new Map((d?.players||[]).map(p=>[String(p.id),p.history?.[day+10]])),teams={};
+ for(const n of rows.flatMap(r=>[r.home,r.away])){const owner=n.toLowerCase(),f=forms.results.find(x=>x.owner===owner),formation=f?{payload:JSON.parse(f.payload),updated:f.updated,actor:f.actor,late:f.late}:null,ids=new Set(Object.values(formation?.payload?.order||{}).flat().map(String)),selected=players.filter(p=>ids.has(String(p.id))).map(p=>({id:p.id,name:p.name,team:p.team,role:p.role,owner:p.owner}));
+ const votes=Object.fromEntries([...ids].map(id=>[id,map.get(id)]));const progress=formation&&d?.through>=day+11?calculateSheetProgress(formation.payload,votes):null;const result=rows.find(r=>r.home===n||r.away===n);
+ teams[owner]={formation,players:selected,progress,officialTotal:result.home===n?result.hf:result.af};}
+ const complete=Object.values(teams).every(t=>t.formation&&t.players.length===25&&t.progress?.allKnown);return {day,rows,teams,complete,reconstructed:true};}
+async function archiveApi(req,db){
+ const u=await permissions(db,await session(req,db));if(!u||req.method!=="GET"||!u.views.includes("archivio"))return json({error:"Non autorizzato"},403);
+ const day=Number(new URL(req.url).searchParams.get("day"));if(!Number.isInteger(day)||day<1||day>21)return json({error:"Giornata non valida"},400);
+ if(u.level!==3&&day>u.throughDay)return json({error:"Giornata non pubblicata"},403);
+ await archiveSchema(db);await db.prepare("CREATE TABLE IF NOT EXISTS fp_results (day INTEGER NOT NULL, match_no INTEGER NOT NULL, home TEXT NOT NULL, away TEXT NOT NULL, hg INTEGER NOT NULL, ag INTEGER NOT NULL, hf REAL NOT NULL, af REAL NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0, updated INTEGER, actor TEXT, PRIMARY KEY(day,match_no))").run();
+ const rows=(await db.prepare("SELECT * FROM fp_results WHERE day=? AND confirmed=1 ORDER BY match_no").bind(day).all()).results;if(rows.length!==4)return json({error:"Giornata non convalidata"},409);
+ const saved=await db.prepare("SELECT payload,created FROM fp_archive_snapshots WHERE day=?").bind(day).first();if(saved)return json({...JSON.parse(saved.payload),frozen:true,created:saved.created});
+ return json({...await archivePayload(db,day,rows),frozen:false});
+}
 async function resultsApi(req,db){
 const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
 if(u.level!==3&&!["calendario","classifica","archivio"].some(s=>u.views.includes(s)))return json({error:"Non autorizzato"},403);
@@ -189,7 +212,10 @@ let b;try{b=await req.json()}catch{return json({error:"Dati non validi"},400)}
 if(b.day!==1||!(b.match===null||Number.isInteger(b.match)&&b.match>=0&&b.match<4)||typeof b.confirmed!=="boolean"||(b.match===null&&!b.confirmed))return json({error:"Operazione non valida"},400);
 const now=Date.now(),args=[+b.confirmed,now,u.username,b.day],sql="UPDATE fp_results SET confirmed=?,updated=?,actor=? WHERE day=?"+(b.match===null?"":" AND match_no=?");
 if(b.match!==null)args.push(b.match);
-await db.batch([db.prepare(sql).bind(...args),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,b.confirmed?"result_confirm":"result_reopen",JSON.stringify(b),now)]);
+await archiveSchema(db);
+const ops=[db.prepare(sql).bind(...args),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,b.confirmed?"result_confirm":"result_reopen",JSON.stringify(b),now)];
+if(b.confirmed){const predicted=(await db.prepare("SELECT * FROM fp_results WHERE day=? ORDER BY match_no").bind(b.day).all()).results.map(r=>(b.match===null||r.match_no===b.match)?{...r,confirmed:1,updated:now,actor:u.username}:r);if(predicted.length===4&&predicted.every(r=>r.confirmed)){const snap=await archivePayload(db,b.day,predicted);if(snap.complete){snap.reconstructed=false;ops.push(db.prepare("INSERT OR IGNORE INTO fp_archive_snapshots(day,payload,created) VALUES (?,?,?)").bind(b.day,JSON.stringify(snap),now));}}}
+await db.batch(ops);
 }else if(req.method!=="GET")return json({error:"Metodo non consentito"},405);
 const rows=await db.prepare(u.level===3?"SELECT * FROM fp_results ORDER BY day,match_no":"SELECT * FROM fp_results WHERE confirmed=1 AND day<=? AND day IN (SELECT day FROM fp_results WHERE confirmed=1 GROUP BY day HAVING COUNT(*)=4) ORDER BY day,match_no");const out=await (u.level===3?rows:rows.bind(u.throughDay)).all();return json({rows:out.results});
 }
@@ -269,6 +295,7 @@ if(path==='/api/auth/what-if')return await whatIfApi(req,db);
 if(path==='/api/auth/group-photo')return await groupPhoto(req,db);
 if(path.startsWith('/api/auth/invite/'))return await inviteApi(req,db,path);
 if(path==='/api/auth/results')return await resultsApi(req,db);
+if(path==='/api/auth/archive-day')return await archiveApi(req,db);
 if(path==='/api/auth/xi-progress')return await xiProgressApi(req,db);
 if(path==='/api/auth/formation-progress')return await formationProgressApi(req,db);
 if(path.startsWith('/api/auth/formation'))return await formationApi(req,db,path);
