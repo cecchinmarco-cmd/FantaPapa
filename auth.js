@@ -43,9 +43,9 @@ if(Number(req.headers.get("Content-Length")||0)>200000)return json({error:"File 
 const raw=await req.text();if(raw.length>200000)return json({error:"File troppo grande"},413);
 let d;try{d=JSON.parse(raw)}catch{return json({error:"JSON non valido"},400)}
 const row=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();if(!row)return json({error:"Importare prima le rose"},409);
-const ids=new Set(JSON.parse(row.payload).players.map(p=>p.id));if(d.season!=="2026/27"||d.through!==12||!Array.isArray(d.players)||d.players.length!==200)return json({error:"Attesi 200 giocatori e 12 giornate"},400);
-for(const p of d.players){if(!ids.delete(p.id)||!Array.isArray(p.history)||p.history.length!==12||!p.history.every(q=>q===null||(Array.isArray(q)&&q.length===3&&["T","S","-"].includes(q[0])&&(q[1]===null||Number.isFinite(q[1]))&&(q[2]===null||Number.isFinite(q[2])))))return json({error:"Dati non validi"},400)}
-await db.batch([db.prepare("INSERT INTO fp_daily_stats VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"stats_import","G1-G12",Date.now())]);return json({ok:true,count:200,through:12});
+const ids=new Set(JSON.parse(row.payload).players.map(p=>p.id));if(d.season!=="2026/27"||(!Number.isInteger(d.through)||d.through<12||d.through>32)||!Array.isArray(d.players)||d.players.length!==200)return json({error:"Attesi 200 giocatori e da 12 a 32 giornate"},400);
+for(const p of d.players){if(!ids.delete(p.id)||!Array.isArray(p.history)||p.history.length!==d.through||!p.history.every(q=>q===null||(Array.isArray(q)&&q.length===3&&["T","S","-"].includes(q[0])&&(q[1]===null||Number.isFinite(q[1]))&&(q[2]===null||Number.isFinite(q[2])))))return json({error:"Dati non validi"},400)}
+await db.batch([db.prepare("INSERT INTO fp_daily_stats VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"stats_import","G1-G"+d.through,Date.now())]);return json({ok:true,count:200,through:d.through});
 }
 async function enrichStats(db,data,day){
 await db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
@@ -134,6 +134,15 @@ return json({ok:true,updated:now,actor:u.username,late});
 }
 
 
+async function xiProgressApi(req,db){
+const u=await permissions(db,await session(req,db));if(!u||!u.views.includes("calendario")||req.method!=="GET")return json({error:"Non autorizzato"},403);
+const counts={};const maxDay=u.level===3||u.results?21:Number(u.throughDay||0);
+await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_formations (day INTEGER NOT NULL, owner TEXT NOT NULL, payload TEXT NOT NULL, updated INTEGER NOT NULL, actor TEXT NOT NULL, late INTEGER NOT NULL, PRIMARY KEY(day,owner))"),db.prepare("CREATE TABLE IF NOT EXISTS fp_deadlines (day INTEGER PRIMARY KEY, kickoff INTEGER NOT NULL)")]);
+const [d,forms,deadlines,confirmed]=await Promise.all([db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first(),db.prepare("SELECT day,owner,payload FROM fp_formations WHERE day<=?").bind(maxDay).all(),db.prepare("SELECT day,kickoff FROM fp_deadlines").all(),db.prepare("SELECT day FROM fp_results WHERE confirmed=1 GROUP BY day HAVING COUNT(*)=4").all()]);const published=new Set(confirmed.results.map(x=>x.day));
+const daily=d?JSON.parse(d.payload):null,map=new Map((daily?.players||[]).map(p=>[String(p.id),p.history]));const owners=["marco",...players],roles=["P","D","C","A"];
+for(const k of deadlines.results){if(k.day>maxDay||(!u.results&&u.level!==3&&k.kickoff<=Date.now()&&!published.has(k.day)))continue;const row=counts[k.day]={};for(const owner of owners){if(k.kickoff>Date.now()){row[owner]=0;continue}const f=forms.results.find(x=>x.day===k.day&&x.owner===owner);if(!daily||daily.through<k.day+11){row[owner]=0;continue}if(!f){row[owner]=null;continue}const p=JSON.parse(f.payload),available=roles.map(role=>(p.order?.[role]||[]).filter(id=>{const q=map.get(String(id))?.[k.day+10];return q&&["T","S"].includes(q[0])&&Number.isFinite(q[2]);}).length);const modules=(p.modules||[]).map(m=>[1,...m.split("-").map(Number)]).filter(m=>m.length===4&&m.reduce((x,y)=>x+y,0)===11);row[owner]=modules.length?Math.max(...modules.map(m=>m.reduce((n,k,i)=>n+Math.min(k,available[i]),0))):null}}
+return json({counts,provisional:true,liveAllowed:u.level===3||!!u.results});
+}
 async function resultsApi(req,db){
 const u=await permissions(db,await session(req,db));if(!u)return json({error:"Effettua l'accesso"},401);
 if(u.level!==3&&!["calendario","classifica","archivio"].some(s=>u.views.includes(s)))return json({error:"Non autorizzato"},403);
@@ -226,6 +235,7 @@ if(path==='/api/auth/what-if')return await whatIfApi(req,db);
 if(path==='/api/auth/group-photo')return await groupPhoto(req,db);
 if(path.startsWith('/api/auth/invite/'))return await inviteApi(req,db,path);
 if(path==='/api/auth/results')return await resultsApi(req,db);
+if(path==='/api/auth/xi-progress')return await xiProgressApi(req,db);
 if(path.startsWith('/api/auth/formation'))return await formationApi(req,db,path);
 if(path==='/api/auth/rosters'||path==='/api/auth/rosters/import'||path==='/api/auth/stats/import')return await rosterApi(req,db,path);
 if(['/api/auth/simple-permissions','/api/auth/permissions','/api/auth/visibility','/api/auth/individual-visibility','/api/auth/account','/api/auth/permission-mode','/api/auth/permission-reset','/api/auth/permission-group','/api/auth/collaborator','/api/auth/guest'].includes(path))return await manage(req,db,path);
