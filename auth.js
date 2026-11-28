@@ -191,7 +191,18 @@ function calculateSheetProgressCore(p,votes){
  const c=candidates[0];if(!c)return {initial:null,final:null,initialTotal:null,finalTotal:null,votes:fv,initialIds:[],finalIds:[],provisional:true};
  const initialIds=roles.flatMap(k=>c.xi[k]),changes=[],reserveIds=[];
  for(const k of roles){const bench=c.reserve[k],incoming=bench.find(id=>first.has(id)&&!started(id))||bench.find(started)||bench[0];if(!incoming)continue;reserveIds.push(incoming);const replace=c.xi[k].filter(id=>!must.has(id)).sort((a,b)=>fv[a]-fv[b])[0];if(replace&&fv[incoming]>fv[replace])changes.push({incoming,replace,gain:fv[incoming]-fv[replace]})}
- if(!allKnown)return {initial:initialIds.length,final:0,initialTotal:sum(initialIds),finalTotal:0,votes:fv,initialIds,finalIds:[],reserveIds,provisional:true,allKnown:false};
+ if(!allKnown){
+ // A closed department is stable only if every possible module assigns it the same size.
+ // If a better reserve exists, the replaced player remains undecided until the global two-change limit is settled.
+ const finalIds=roles.flatMap((k,i)=>{
+  if(!order[k].every(known))return [];
+  const sizes=(p.modules||[]).map(m=>[1,...m.split("-").map(Number)]).filter(a=>a.length===4&&a.reduce((x,y)=>x+y,0)===11).map(a=>a[i]);
+  if(!sizes.length||new Set(sizes).size!==1)return [];
+  const change=changes.find(z=>c.xi[k].includes(z.replace));
+  return c.xi[k].filter(id=>id!==change?.replace);
+ });
+ return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,reserveIds,provisional:true,allKnown:false};
+ }
  changes.sort((a,b)=>b.gain-a.gain);const finalIds=initialIds.map(id=>changes.slice(0,2).find(c=>c.replace===id)?.incoming||id);
  return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,reserveIds,provisional:true,allKnown:true};
 }
