@@ -89,9 +89,14 @@ await db.batch([db.prepare("INSERT INTO fp_daily_stats VALUES (1,?,?) ON CONFLIC
 async function enrichStats(db,data,day){
 await db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
 const row=await db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first();if(!row)return data;
-const d=JSON.parse(row.payload),through=Math.min(completedStatsThrough(d),day-1),map=new Map(d.players.map(p=>[p.id,p.history]));
+const d=JSON.parse(row.payload),through=Math.min(Math.max(completedStatsThrough(d),Math.min(12,d.through||0)),day-1),map=new Map((d.players||[]).map(p=>[String(p.id),p.history]));
 const avg=a=>{const v=a.filter(q=>q&&Number.isFinite(q[2])).map(q=>q[2]);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null};
-return {...data,through,source:"Fantapunti Gazzetta",players:data.players.map(p=>{const hist=(map.get(p.id)||[]).slice(0,through);return {...p,fm:avg(hist),fm5:avg(hist.slice(-5)),history:hist.map(q=>q?q[0]:"?"),daily:hist}})};
+return {...data,through,source:"Fantapunti Gazzetta",players:data.players.map(p=>{
+ const hist=(map.get(String(p.id))||[]).slice(0,through);
+ if(!hist.some(q=>Array.isArray(q)))return p;
+ const recent=hist.slice(-5),fm=avg(hist),fm5=avg(recent);
+ return {...p,fm:fm??(through===11?p.fm:null),fm5:fm5??(through===11?p.fm5:null),history:hist.map(q=>q?q[0]:"?"),daily:hist};
+})};
 }
 
 async function rosterApi(req,db,path){
