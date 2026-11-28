@@ -39,10 +39,9 @@ return json({error:"Funzione non disponibile"},404)}
 // The imported horizon can include live results. Only explicitly completed rounds enter statistics.
 function completedStatsThrough(d){
  if(!d)return 0;
- const limit=Math.min(d.through||0,Number.isInteger(d.completedThrough)?d.completedThrough:12);
- let n=0;
- while(n<limit&&d.players?.length===200&&d.players.every(p=>Array.isArray(p.history?.[n])))n++;
- return n;
+ // A null individual history is missing player data, not evidence that the whole Serie A round is live.
+ // The administrator's completed-round marker is authoritative; legacy data is capped at G12.
+ return Math.max(0,Math.min(d.through||0,Number.isInteger(d.completedThrough)?d.completedThrough:12));
 }
 
 /* Automatic partial import, Serie A G13, players_stats(1).xlsx, Bologna–Venezia.
@@ -83,7 +82,7 @@ let d;try{d=JSON.parse(raw)}catch{return json({error:"JSON non valido"},400)}
 const row=await db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first();if(!row)return json({error:"Importare prima le rose"},409);
 const ids=new Set(JSON.parse(row.payload).players.map(p=>p.id));if(d.season!=="2026/27"||(!Number.isInteger(d.through)||d.through<12||d.through>32)||!Array.isArray(d.players)||d.players.length!==200)return json({error:"Attesi 200 giocatori e da 12 a 32 giornate"},400);
 for(const p of d.players){if(!ids.delete(p.id)||!Array.isArray(p.history)||p.history.length!==d.through||!p.history.every(q=>q===null||(Array.isArray(q)&&q.length===3&&["T","S","-"].includes(q[0])&&(q[1]===null||Number.isFinite(q[1]))&&(q[2]===null||Number.isFinite(q[2])))))return json({error:"Dati non validi"},400)}
-if(d.completedThrough!==undefined&&(!Number.isInteger(d.completedThrough)||d.completedThrough<0||d.completedThrough>d.through||completedStatsThrough(d)!==d.completedThrough))return json({error:"Giornate concluse non valide o dati incompleti"},400);
+if(d.completedThrough!==undefined&&(!Number.isInteger(d.completedThrough)||d.completedThrough<0||d.completedThrough>d.through))return json({error:"Giornate concluse non valide o dati incompleti"},400);
 if(d.completedThrough===undefined){const previous=await db.prepare("SELECT payload FROM fp_daily_stats WHERE id=1").first();d.completedThrough=Math.min(d.through,previous?completedStatsThrough(JSON.parse(previous.payload)):12);}
 await db.batch([db.prepare("INSERT INTO fp_daily_stats VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated").bind(JSON.stringify(d),Date.now()),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"stats_import","G1-G"+d.through,Date.now())]);return json({ok:true,count:200,through:d.through,completedThrough:completedStatsThrough(d)});
 }
