@@ -44,6 +44,36 @@ function completedStatsThrough(d){
  while(n<limit&&d.players?.length===200&&d.players.every(p=>Array.isArray(p.history?.[n])))n++;
  return n;
 }
+
+/* Automatic partial import, Serie A G13, players_stats(1).xlsx, Bologna–Venezia.
+   The deployment carries the source; D1 merges it once, without touching G1–12. */
+const g13BolognaVeneziaSource="Filip|Stankovic|VEN|P|7|T|0|0|0|0|0|0|1|0|0\nLukasz|Skorupski|BOL|P|6.5|T|0|0|0|0|0|0|1|0|0\nArthur|Theate|BOL|D|6.5|T|0|0|0|0|0|0|1|0|0\nRedouane|Halhal|VEN|D|6.5|T|0|0|0|0|0|0|1|0|0\nArmel|Bella-kotchap|VEN|D|6.5|S|0|0|0|0|0|0|0|0|0\nMatias|Moreno|VEN|D|6.5|T|0|0|0|0|0|0|1|0|0\nAntoine|Hainaut|VEN|C|6.5|T|0|0|1|0|0|0|1|0|0\nKike|Perez|VEN|C|6|T|0|0|0|0|0|0|1|0|0\nGianluca|Busio|VEN|C|6|T|0|0|0|0|0|0|1|0|0\nNicolò|Casale|BOL|D|6|T|0|0|0|0|0|0|1|0|0\nMatteo|Darmian|BOL|D|6|S|0|0|0|0|0|0|1|0|0\nRidgeciano|Haps|VEN|D|6|T|0|0|0|0|0|0|1|0|0\nThorir|Helgason|VEN|C|6|S|0|0|0|0|0|0|1|0|0\nRiccardo|Orsolini|BOL|C|5.5|S|0|0|0|0|0|0|1|0|0\nNicolò|Cambiaghi|BOL|A|5.5|S|0|0|0|0|0|0|1|0|0\nTommaso|Pobega|BOL|C|5.5|T|0|0|0|0|0|0|1|0|0\nLewis|Ferguson|BOL|C|5.5|T|0|0|0|0|0|0|1|0|0\nJohn|Yeboah|VEN|A|5.5|T|0|0|0|0|0|0|1|0|0\nAkor|Adams|VEN|A|5.5|T|0|0|0|0|0|0|1|0|0\nSimon|Sohm|VEN|C|5.5|T|0|0|0|0|0|0|1|0|0\nJuan|Jesus|VEN|D|6|T|0|0|1|0|0|0|1|0|0\nRahim|Alhassane|BOL|D|5.5|T|0|0|0|0|0|0|1|0|0\nLion|Lauberbach|VEN|A|5.5|S|0|0|0|0|0|0|0|0|0\nFederico|Bernardeschi|BOL|C|5|T|0|0|0|0|0|0|1|0|0\nSamuel|Mbangula|BOL|C|5|T|0|0|0|0|0|0|1|0|0\nJens|Odgaard|BOL|C|5.5|T|0|0|1|0|0|0|1|0|0\nRoberto|Piccoli|BOL|A|5|S|0|0|0|0|0|0|0|0|0\nNadir|Zortea|BOL|D|5.5|T|0|0|1|0|0|0|1|0|0\nAlbion|Rrahmani|VEN|A|5.5|S|0|0|1|0|0|0|0|0|0\nMartin|Vitik|BOL|D|5.5|T|0|0|1|0|0|0|1|0|0\nJuan|Miranda|BOL|D|0|-\nToma|Basic|VEN|C|0|-\nArtem|Dovbyk|BOL|A|0|-\nNikola|Moro|BOL|C|0|-\nEmil|Holm|BOL|D|0|-\nJay|Enem|BOL|A|0|-\nRichie|Sagrado|VEN|D|0|-\nTorbjorn|Heggem|BOL|D|0|-\nToni|Fernandez|VEN|C|0|-\nThierry|Correia|VEN|D|0|-\nMikel|Amondarain|BOL|C|0|-\nEivind|Helland|BOL|D|0|-\nPasquale|Mazzocchi|VEN|D|0|-\nAndrea|Adorante|VEN|A|0|-\nJoël|Schingtienne|VEN|D|0|-\nOussama|El Azzouzi|BOL|C|0|-\nMatteo|Dagasso|VEN|C|0|-\nMarco|Libra|BOL|C|0|-\nBartol|Franjic|VEN|D|0|-\nLorenzo|De Silvestri|BOL|D|0|-\nAlfred|Duncan|VEN|C|0|-\nKornel|Lisman|VEN|A|0|-\nRufai|Mohammed|VEN|D|0|-\nAlejandro|Gomes|VEN|D|0|-\nMarin|Sverko|VEN|D|0|-\nLamine|Fanne|VEN|C|0|-\nUkko|Happonen|BOL|P|0|-\nMassimo|Pessina|BOL|P|0|-\nMatteo|Grandi|VEN|P|0|-\nLorenzo|Berardi|VEN|C|0|-\nAlessio|Pozzi|VEN|P|0|-\nLorenzo|Montipò|VEN|P|0|-\nMohamed Malang|Touré|VEN|A|0|-\nSimone|Panada|VEN|C|0|-\nLuca|Lo Monaco|BOL|A|0|-";
+const g13Name=v=>String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
+function mergeG13BolognaVenezia(base,d){
+ if(!d||d.season!=="2026/27"||d.through<12||d.through>13||d.imports?.g13BolognaVenezia||completedStatsThrough(d)>=13||base?.players?.length!==200||d.players?.length!==200)return null;
+ const rows=g13BolognaVeneziaSource.split("\n").map(line=>{const [first,last,team,role,v,p,...events]=line.split("|");return {name:g13Name(first+" "+last),last:g13Name(last),team,role,v:Number(v),p,events:events.map(Number)}});
+ const rosters=new Map(base.players.map(p=>[String(p.id),p])), unmatched=[],ambiguous=[],matched=[];
+ const next=JSON.parse(JSON.stringify(d));
+ next.completedThrough=completedStatsThrough(d);next.through=13;
+ for(const p of next.players){const roster=rosters.get(String(p.id));if(!roster||!Array.isArray(p.history))return null;while(p.history.length<13)p.history.push(null);
+  const name=g13Name(roster.name),exact=rows.filter(z=>z.name===name),surname=rows.filter(z=>z.last===name&&z.team===roster.team);const candidates=exact.length?exact:surname;
+  if(candidates.length!==1){if(candidates.length>1)ambiguous.push(roster.name);else if(["BOL","VEN"].includes(roster.team))unmatched.push(roster.name);continue;}
+  const z=candidates[0];if(p.history[12]!==null)continue;
+  const [g=0,a=0,y=0,red=0,og=0,miss=0,clean=0,against=0,saved=0]=z.events;
+  const fv=z.v+3*g+a-.5*y-red-og-3*miss-(z.role==="P"?against:0)+(z.role==="P"?3*saved:0);
+  p.history[12]=z.p==="-"?["-",null,null]:[z.p,z.v,fv];matched.push({id:p.id,name:roster.name,team:z.team,events:{goals:g,assists:a,conceded:against,cleanSheet:clean,yellow:y,red,ownGoals:og,penaltiesMissed:miss,penaltiesSaved:saved}});
+ }
+ if(!matched.length)return null;
+ next.imports={...(next.imports||{}),g13BolognaVenezia:{matched,unmatched,ambiguous,source:"players_stats(1).xlsx",partial:true}};
+ return next;
+}
+async function applyG13BolognaVenezia(db){
+ const [r,d]=await Promise.all([db.prepare("SELECT payload FROM fp_roster_snapshot WHERE id=1").first(),db.prepare("SELECT payload,updated FROM fp_daily_stats WHERE id=1").first()]);
+ if(!r||!d)return;
+ const next=mergeG13BolognaVenezia(JSON.parse(r.payload),JSON.parse(d.payload));if(!next)return;
+ await db.prepare("UPDATE fp_daily_stats SET payload=?,updated=? WHERE id=1 AND payload=?").bind(JSON.stringify(next),Date.now(),d.payload).run();
+}
+
 async function dailyStats(req,db,u,path){
 await db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)").run();
 if(path!=="/api/auth/stats/import"||req.method!=="POST"||u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Accesso riservato"},403);
@@ -300,6 +330,9 @@ const hallSeed=[[1993,"Marco",null,null],[1994,"Andrea",null,null],[1995,"Michel
 async function hallApi(req,db){const u=await permissions(db,await session(req,db));if(!u||!(u.level===3||u.views.includes("albo")))return json({error:"Non autorizzato"},403);await db.prepare("CREATE TABLE IF NOT EXISTS fp_hall (year INTEGER PRIMARY KEY, gold TEXT, silver TEXT, bronze TEXT, updated INTEGER, actor TEXT)").run();const existing=await db.prepare("SELECT year FROM fp_hall").all(),known=new Set(existing.results.map(r=>r.year));const pending=hallSeed.filter(r=>!known.has(r[0]));if(pending.length)await db.batch(pending.map(r=>db.prepare("INSERT OR IGNORE INTO fp_hall(year,gold,silver,bronze) VALUES (?,?,?,?)").bind(...r)));if(req.method==="POST"){if(u.level!==3||req.headers.get("Origin")!==new URL(req.url).origin)return json({error:"Non autorizzato"},403);let b;try{b=await req.json()}catch{return json({error:"Dati non validi"},400)}const vals=[b.gold,b.silver,b.bronze].map(v=>typeof v==="string"?v.trim():null).map(v=>v||null);if(!Number.isInteger(b.year)||b.year<1993||b.year>new Date().getFullYear()+1||vals.some(v=>v&&v.length>40)||new Set(vals.filter(Boolean).map(v=>v.toLowerCase())).size!==vals.filter(Boolean).length)return json({error:"Podio non valido"},400);await db.batch([db.prepare("INSERT INTO fp_hall VALUES (?,?,?,?,?,?) ON CONFLICT(year) DO UPDATE SET gold=excluded.gold,silver=excluded.silver,bronze=excluded.bronze,updated=excluded.updated,actor=excluded.actor").bind(b.year,...vals,Date.now(),u.username),db.prepare("INSERT INTO fp_audit(actor,action,detail,created) VALUES (?,?,?,?)").bind(u.username,"hall_update",JSON.stringify({year:b.year,values:vals}),Date.now())])}else if(req.method!=="GET")return json({error:"Metodo non consentito"},405);const r=await db.prepare("SELECT year,gold,silver,bronze FROM fp_hall ORDER BY year DESC").all();return json({rows:r.results})}
 export async function auth(req,env,path){
 const db=env.DB;try{await schema(db);await permissionSchema(db);await simpleSchema(db);
+if(req.method==="GET"&&["/api/auth/formation-progress","/api/auth/xi-progress","/api/auth/rosters","/api/auth/statistics","/api/auth/me"].includes(path)){
+ const u=await session(req,db);if(u){await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS fp_roster_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)"),db.prepare("CREATE TABLE IF NOT EXISTS fp_daily_stats (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated INTEGER NOT NULL)")]);await applyG13BolognaVenezia(db);}
+}
 if(path==="/api/auth/login-log"){const u=await permissions(db,await session(req,db));if(u?.level!==3||req.method!=="GET")return json({error:"Accesso riservato"},403);const username=new URL(req.url).searchParams.get("username");if(username){const rows=await db.prepare("SELECT level,created FROM fp_login_log WHERE username=? ORDER BY id DESC LIMIT 100").bind(username).all();return json({rows:rows.results})}const rows=await db.prepare("SELECT a.username,a.level,a.enabled,(SELECT COUNT(*) FROM fp_login_log l WHERE l.username=a.username) AS logins,(SELECT MAX(created) FROM fp_login_log l WHERE l.username=a.username) AS last_login,(SELECT updated FROM fp_activity t WHERE t.username=a.username) AS last_activity FROM ("+accountSQL+") a ORDER BY COALESCE(last_activity,last_login,0) DESC,a.username").all();return json({rows:rows.results})}
 if(path==='/api/auth/hall')return await hallApi(req,db);
 if(path==='/api/auth/statistics')return await statisticsApi(req,db);
