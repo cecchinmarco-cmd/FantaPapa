@@ -142,18 +142,18 @@ function calculateSheetProgressCore(p,votes){
  for(const pair of p.pairs||[]){const [a,b]=pair.map(String);const k=roles.find(r=>order[r].includes(a)&&order[r].includes(b));if(!k)continue;const list=order[k],lo=Math.min(list.indexOf(a),list.indexOf(b)),hi=Math.max(list.indexOf(a),list.indexOf(b));if(known(list[lo])&&!started(list[lo])&&started(list[hi]))[list[lo],list[hi]]=[list[hi],list[lo]]}
  const fv=Object.fromEntries(Object.entries(votes).filter(([id])=>valid(id)).map(([id,q])=>[id,q[2]])),sum=ids=>ids.reduce((t,id)=>t+fv[id],0);
  if(!Object.keys(fv).length)return {initial:0,final:0,initialTotal:0,finalTotal:0,votes:fv,initialIds:[],finalIds:[],provisional:true};
- // Wait until every player's appearance is known before choosing the full initial module and changes.
- if(roles.some(k=>order[k].some(id=>!known(id))))return {initial:0,final:0,initialTotal:0,finalTotal:0,votes:fv,initialIds:[],finalIds:[],provisional:true};
+ const allKnown=roles.every(k=>order[k].every(known));
  const pool=Object.fromEntries(roles.map(k=>[k,order[k].filter(valid)]));
  const candidates=(p.modules||[]).map((m,index)=>{const sizes=[1,...m.split("-").map(Number)];if(sizes.length!==4||sizes.reduce((a,b)=>a+b,0)!==11)return null;const xi={},reserve={},covered={};
  for(let i=0;i<4;i++){const k=roles[i],list=pool[k],n=sizes[i],rank=list.filter(id=>must.has(id)).concat(list.filter(id=>!must.has(id)&&started(id)),list.filter(id=>!must.has(id)&&!started(id)));xi[k]=rank.slice(0,n);reserve[k]=list.filter(id=>!xi[k].includes(id));covered[k]=xi[k].length===n&&(reserve[k].length>0||(p.departments?.[k]||[]).includes(n)&&xi[k].every(started))}
  const ids=roles.flatMap(k=>xi[k]);return {index,xi,reserve,covered,count:ids.length,full:ids.length===11&&roles.slice(1).every(k=>covered[k]),must:ids.filter(id=>must.has(id)).length,starts:ids.filter(started).length};}).filter(Boolean);
  candidates.sort((a,b)=>b.must-a.must||Number(b.full)-Number(a.full)||b.count-a.count||Number(b.covered.A)-Number(a.covered.A)||Number(b.covered.C)-Number(a.covered.C)||Number(b.covered.D)-Number(a.covered.D)||a.index-b.index);
  const c=candidates[0];if(!c)return {initial:null,final:null,initialTotal:null,finalTotal:null,votes:fv,initialIds:[],finalIds:[],provisional:true};
- const initialIds=roles.flatMap(k=>c.xi[k]),changes=[];
- for(const k of roles){const bench=c.reserve[k],incoming=bench.find(id=>first.has(id)&&!started(id))||bench.find(started)||bench[0];if(!incoming)continue;const replace=c.xi[k].filter(id=>!must.has(id)).sort((a,b)=>fv[a]-fv[b])[0];if(replace&&fv[incoming]>fv[replace])changes.push({incoming,replace,gain:fv[incoming]-fv[replace]})}
+ const initialIds=roles.flatMap(k=>c.xi[k]),changes=[],reserveIds=[];
+ for(const k of roles){const bench=c.reserve[k],incoming=bench.find(id=>first.has(id)&&!started(id))||bench.find(started)||bench[0];if(!incoming)continue;reserveIds.push(incoming);const replace=c.xi[k].filter(id=>!must.has(id)).sort((a,b)=>fv[a]-fv[b])[0];if(replace&&fv[incoming]>fv[replace])changes.push({incoming,replace,gain:fv[incoming]-fv[replace]})}
+ if(!allKnown)return {initial:initialIds.length,final:0,initialTotal:sum(initialIds),finalTotal:0,votes:fv,initialIds,finalIds:[],reserveIds,provisional:true,allKnown:false};
  changes.sort((a,b)=>b.gain-a.gain);const finalIds=initialIds.map(id=>changes.slice(0,2).find(c=>c.replace===id)?.incoming||id);
- return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,provisional:true,allKnown:true};
+ return {initial:initialIds.length,final:finalIds.length,initialTotal:sum(initialIds),finalTotal:sum(finalIds),votes:fv,initialIds,finalIds,reserveIds,provisional:true,allKnown:true};
 }
 async function formationProgressApi(req,db){
  const u=await permissions(db,await session(req,db));if(!u||!u.views.includes("calendario")||req.method!=="GET")return json({error:"Non autorizzato"},403);
